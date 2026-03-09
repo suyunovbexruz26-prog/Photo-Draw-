@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Photo Draw AR Pro</title>
+    <style>
+        :root { --main-color: #87CEFA; --bg-dark: #000; --panel-bg: #1a1a1a; }
+        body { margin: 0; padding: 0; background: var(--bg-dark); font-family: sans-serif; overflow: hidden; touch-action: none; }
+
+        /* 1. Splash Screen - Animatsiya qayta yoqildi */
+        #splash {
+            position: fixed; inset: 0; background: #000;
+            display: flex; justify-content: center; align-items: center;
+            z-index: 1000; 
+            /* Animatsiya 0.5 soniyada yo'qoladi, 2.5 soniya kutib */
+            animation: fadeOut 0.5s forwards 2.5s; 
+        }
+
+        .logo { 
+            /* Yozuv o'lchami bir qatorga sig'ishi uchun kichraytirildi */
+            font-size: 1.8rem; 
+            font-weight: bold; 
+            color: var(--main-color); 
+            letter-spacing: 5px; 
+            text-transform: uppercase;
+            white-space: nowrap; /* Yozuv ikki qatorga bo'linmasligi uchun */
+            
+            /* Kirish animatsiyasi qo'shildi */
+            opacity: 0;
+            transform: translateY(30px);
+            animation: fadeInUp 1s ease-out forwards;
+            text-shadow: 0 0 15px rgba(135,206,250,0.5);
+        }
+
+        /* Yozuvning pastdan tepaga chiqish animatsiyasi */
+        @keyframes fadeInUp {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Splash screenni yo'qotish animatsiyasi */
+        @keyframes fadeOut { 
+            to { opacity: 0; visibility: hidden; } 
+        }
+
+        /* 2. Ruxsat oynasi */
+        #setup-screen {
+            position: fixed; inset: 0; background: #111;
+            display: flex; flex-direction: column; justify-content: center;
+            align-items: center; z-index: 500; color: #fff; text-align: center; padding: 20px;
+        }
+        .btn-start {
+            background: var(--main-color); color: #000; padding: 15px 40px;
+            border-radius: 50px; font-weight: bold; border: none; cursor: pointer;
+            font-size: 1.2rem; box-shadow: 0 0 20px rgba(135,206,250,0.3);
+        }
+
+        /* 3. Ish maydoni */
+        #viewport { position: relative; width: 100vw; height: 80vh; overflow: hidden; }
+        #video { width: 100%; height: 100%; object-fit: cover; background: #222; }
+        #overlay {
+            position: absolute; top: 10%; left: 10%; width: 250px;
+            opacity: 0.5; z-index: 10; display: none;
+            filter: drop-shadow(0 0 5px rgba(0,0,0,0.5));
+        }
+
+        /* 4. Boshqaruv paneli */
+        .controls {
+            position: fixed; bottom: 0; width: 100%; height: 20vh;
+            background: var(--panel-bg); display: grid;
+            grid-template-columns: repeat(3, 1fr); align-items: center;
+            border-top: 2px solid var(--main-color); z-index: 100; padding: 5px; box-sizing: border-box;
+        }
+        .btn-ui {
+            background: var(--main-color); color: #000; padding: 10px;
+            border-radius: 8px; font-weight: bold; font-size: 11px;
+            text-align: center; margin: 2px; text-transform: uppercase; cursor: pointer;
+        }
+        .slider-box { color: var(--main-color); text-align: center; font-size: 10px; font-weight: bold; }
+        input[type="range"] { width: 90%; accent-color: var(--main-color); }
+    </style>
+</head>
+<body>
+
+    <div id="splash"><div class="logo">PHOTO DRAW</div></div>
+
+    <div id="setup-screen">
+        <h2 style="color:var(--main-color)">Kameraga ulanish</h2>
+        <p>AR chizishni boshlash uchun quyidagi tugmani bosing va kameraga ruxsat bering.</p>
+        <p style="font-size: 12px; color: #888;">(Acode'da bo'lsangiz, ushbu faylni tashqi Chrome brauzerida oching)</p>
+        <button class="btn-start" onclick="startApp()">RUXSAT BERISH</button>
+    </div>
+
+    <div id="viewport">
+        <video id="video" autoplay playsinline muted></video>
+        <img id="overlay" src="" alt="Shablon">
+    </div>
+
+    <div class="controls">
+        <label class="btn-ui">Rasm <input type="file" id="fileInput" accept="image/*" style="display:none"></label>
+        <div class="btn-ui" onclick="switchCam()">Kamera 🔄</div>
+        <div class="btn-ui" onclick="toggleFS()">Ekran 📺</div>
+
+        <div class="slider-box">SHAFFOFLIK<input type="range" id="opSlid" min="0" max="1" step="0.1" value="0.5"></div>
+        <div class="slider-box">O'LCHAM<input type="range" id="szSlid" min="50" max="1500" step="10" value="250"></div>
+        <div class="slider-box">AYLANTIRISH<input type="range" id="rtSlid" min="0" max="360" step="1" value="0"></div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const fileInput = document.getElementById('fileInput');
+        const setupScreen = document.getElementById('setup-screen');
+        
+        let currentStream = null;
+        let useFront = false;
+
+        // 1. Kamerani ishga tushirish (Faqat tugma bosilganda)
+        async function startApp() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert("Brauzeringiz kamerani qo'llab-quvvatlamaydi yoki ulanish xavfsiz emas (HTTPS talab qilinadi).");
+                return;
+            }
+
+            try {
+                if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: useFront ? "user" : "environment" }
+                });
+                
+                video.srcObject = stream;
+                setupScreen.style.display = "none"; // Ruxsat berilgach ekranni yopish
+                video.play();
+            } catch (err) {
+                console.error(err);
+                alert("Xatolik: Kameraga ulanib bo'lmadi. Sozlamalardan ruxsatni tekshiring.");
+            }
+        }
+
+        // 2. Kamera almashtirish
+        function switchCam() {
+            useFront = !useFront;
+            startApp();
+        }
+
+        // 3. To'liq ekran
+        function toggleFS() {
+            if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(e => {});
+            else document.exitFullscreen();
+        }
+
+        // 4. Rasm yuklash
+        fileInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    overlay.src = ev.target.result;
+                    overlay.style.display = "block";
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+
+        // 5. Boshqaruv slayderlari
+        document.getElementById('opSlid').oninput = (e) => overlay.style.opacity = e.target.value;
+        document.getElementById('szSlid').oninput = (e) => overlay.style.width = e.target.value + "px";
+        document.getElementById('rtSlid').oninput = (e) => overlay.style.transform = `rotate(${e.target.value}deg)`;
+
+        // 6. Rasmni surish (Touch & Drag)
+        let isDrag = false, startX, startY, initX, initY;
+        
+        const startMove = (e) => {
+            isDrag = true;
+            const ev = e.type.includes('touch') ? e.touches[0] : e;
+            startX = ev.clientX; startY = ev.clientY;
+            initX = overlay.offsetLeft; initY = overlay.offsetTop;
+            if(e.cancelable) e.preventDefault();
+        };
+
+        const onMove = (e) => {
+            if (!isDrag) return;
+            const ev = e.type.includes('touch') ? e.touches[0] : e;
+            overlay.style.left = (initX + (ev.clientX - startX)) + 'px';
+            overlay.style.top = (initY + (ev.clientY - startY)) + 'px';
+        };
+
+        overlay.addEventListener('mousedown', startMove);
+        overlay.addEventListener('touchstart', startMove, {passive: false});
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('touchmove', onMove, {passive: false});
+        window.addEventListener('mouseup', () => isDrag = false);
+        window.addEventListener('touchend', () => isDrag = false);
+    </script>
+</body>
+</html>
